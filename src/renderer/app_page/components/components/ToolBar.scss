@@ -150,6 +150,9 @@
           background-color: #000;
           transform: rotate(45deg);
 
+          &.extra_small {
+            width: 1px;
+          }
           &.light {
             width: 2px;
           }

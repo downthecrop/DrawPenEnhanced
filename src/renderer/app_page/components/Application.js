@@ -7,6 +7,7 @@ import ToolBar from './components/ToolBar.js';
 import CuteCursor from './components/CuteCursor.js';
 import RippleEffect from './components/RippleEffect.js';
 import TextEditor from './components/TextEditor.js';
+import RadialColorPicker from './components/RadialColorPicker.js';
 import {
   filterClosePoints,
   getMouseCoordinates,
@@ -98,6 +99,8 @@ const Application = (settings) => {
   const [redoStackFigures, setRedoStackFigures] = useState([]);
   const [clipboardFigure, setClipboardFigure] = useState(null);
   const [isShiftPressed, setIsShiftPressed] = useState(false);
+  const [showRadialColorPicker, setShowRadialColorPicker] = useState(false);
+  const [radialColorPickerPosition, setRadialColorPickerPosition] = useState({ x: 0, y: 0 });
 
   useEffect(() => {
     window.electronAPI.onResetScreen(handleReset);
@@ -292,7 +295,10 @@ const Application = (settings) => {
         handleChangeTool('laser');
         break;
       case '6':
-        handleChangeTool('eraser');
+        if (event.repeat) return; // Don't repeat on key hold
+        // Show radial color picker when '6' is pressed
+        setRadialColorPickerPosition(mouseCoordinates);
+        setShowRadialColorPicker(true);
         break;
       case '7':
         if (['eraser', 'laser'].includes(activeTool)) {
@@ -307,12 +313,29 @@ const Application = (settings) => {
     }
   }, [allFigures, undoStackFigures, redoStackFigures, clipboardFigure, isDrawing, activeFigureInfo, activeTool, activeColorIndex, activeWidthIndex, toolbarLastActiveFigure, textEditorContainer, mouseCoordinates]);
 
+  // Ref to track currently hovered color index in radial picker
+  const activeRadialColorIndexRef = useRef(null);
+
   const handleKeyUp = useCallback((event) => {
     const eventKey = (event.key || '').toLowerCase();
 
     if (eventKey === 'shift') {
       setIsShiftPressed(false);
     }
+    
+    if (eventKey === '6') {
+      // If there's an active color index from the radial picker, select that color
+      if (activeRadialColorIndexRef.current !== null) {
+        handleChangeColor(activeRadialColorIndexRef.current);
+      }
+      // Hide the radial color picker when '6' is released
+      setShowRadialColorPicker(false);
+      activeRadialColorIndexRef.current = null;
+    }
+  }, []);
+
+  const handleRadialColorHover = useCallback((colorIndex) => {
+    activeRadialColorIndexRef.current = colorIndex;
   }, []);
 
   useEffect(() => {
@@ -925,6 +948,13 @@ const Application = (settings) => {
         activeWidthIndex={activeWidthIndex}
         activeTool={activeTool}
         Icons={Icons}
+      />
+
+      <RadialColorPicker
+        colors={colorList}
+        position={radialColorPickerPosition}
+        isVisible={showRadialColorPicker}
+        onHoverChange={handleRadialColorHover}
       />
 
       <DrawDesk
