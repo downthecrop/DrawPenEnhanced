@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Main -> Renderer
   onResetScreen: (callback) => ipcRenderer.on('reset_screen', callback),
+  onHideApp: (callback) => ipcRenderer.on('hide_app', callback),
   onToggleToolbar: (callback) => ipcRenderer.on('toggle_toolbar', callback),
   onToggleWhiteboard: (callback) => ipcRenderer.on('toggle_whiteboard', callback),
 });

@@ -104,11 +104,14 @@ const Application = (settings) => {
 
   useEffect(() => {
     window.electronAPI.onResetScreen(handleReset);
+    window.electronAPI.onHideApp(handleHideApp);
     window.electronAPI.onToggleToolbar(handleToggleToolbar);
     window.electronAPI.onToggleWhiteboard(handleToggleWhiteboard);
   }, []);
 
   const lastPasteAtRef = useRef(null);
+  const sixKeyTimeoutRef = useRef(null);
+  const sixKeyPressTimeRef = useRef(null);
 
   const handleKeyDown = useCallback((event) => {
     const eventKey = (event.key || '').toLowerCase();
@@ -296,9 +299,19 @@ const Application = (settings) => {
         break;
       case '6':
         if (event.repeat) return; // Don't repeat on key hold
-        // Show radial color picker when '6' is pressed
-        setRadialColorPickerPosition(mouseCoordinates);
-        setShowRadialColorPicker(true);
+        // Record the time when '6' is pressed to differentiate between short and long press
+        sixKeyPressTimeRef.current = Date.now();
+        activeRadialColorIndexRef.current = null; // Reset color selection
+        
+        // Set a timeout to handle the case where the key is released before radial menu appears
+        if (sixKeyTimeoutRef.current) {
+          clearTimeout(sixKeyTimeoutRef.current);
+        }
+        sixKeyTimeoutRef.current = setTimeout(() => {
+          // Show radial menu after holding for 300ms
+          setRadialColorPickerPosition(mouseCoordinates);
+          setShowRadialColorPicker(true);
+        }, 300); // 300ms hold to show radial menu
         break;
       case '7':
         if (['eraser', 'laser'].includes(activeTool)) {
@@ -324,13 +337,28 @@ const Application = (settings) => {
     }
     
     if (eventKey === '6') {
-      // If there's an active color index from the radial picker, select that color
-      if (activeRadialColorIndexRef.current !== null) {
+      // Clear the timeout that would show the radial menu
+      if (sixKeyTimeoutRef.current) {
+        clearTimeout(sixKeyTimeoutRef.current);
+        sixKeyTimeoutRef.current = null;
+      }
+      
+      const pressDuration = Date.now() - sixKeyPressTimeRef.current;
+      const isShortPress = pressDuration < 300; // Less than 300ms is considered a short press
+      
+      if (isShortPress) {
+        // Short press: toggle between eraser and pen
+        const newTool = activeTool === 'eraser' ? 'pen' : 'eraser';
+        handleChangeTool(newTool);
+      } else if (activeRadialColorIndexRef.current !== null) {
+        // Color was selected from radial menu: change the color
         handleChangeColor(activeRadialColorIndexRef.current);
       }
-      // Hide the radial color picker when '6' is released
+      
+      // Hide the radial color picker if it was shown
       setShowRadialColorPicker(false);
       activeRadialColorIndexRef.current = null;
+      sixKeyPressTimeRef.current = null;
     }
   }, []);
 
@@ -414,42 +442,65 @@ const Application = (settings) => {
   }
 
   const clearTail = (id, figures) => {
-    const figure = figures.find(figure => figure.id === id);
-    if (figure) {
-      figure.points.shift();
-    }
-
-    return figures
+    return figures.map(figure => {
+      if (figure.id === id) {
+        return {
+          ...figure,
+          points: figure.points.slice(1) // Remove first element without mutating original
+        };
+      }
+      return figure;
+    });
   }
 
   const handleChangeColor = (newColorIndex) => {
-    if (activeFigureInfo) {
-      const activeFigure = findActiveFigure()
-
-      activeFigure.colorIndex = newColorIndex
-    }
-
     setActiveColorIndex(newColorIndex);
-    setAllFigures([...allFigures]);
+    
+    // If there's an active figure, create a new array with the updated figure
+    if (activeFigureInfo) {
+      setAllFigures(prevAllFigures => {
+        return prevAllFigures.map(figure => {
+          if (figure.id === activeFigureInfo.id) {
+            return { ...figure, colorIndex: newColorIndex };
+          }
+          return figure;
+        });
+      });
+    } else {
+      // Just update the state if no active figure, using the previous state to avoid stale closure
+      setAllFigures(prevAllFigures => [...prevAllFigures]);
+    }
   };
 
   const handleChangeWidth = (newWidthIndex) => {
-    if (activeFigureInfo) {
-      const activeFigure = findActiveFigure()
-
-      activeFigure.widthIndex = newWidthIndex
-
-      if (activeFigure.type === 'text') {
-        const [width, height] = calculateCanvasTextWidth(activeFigure.text, activeFigure.widthIndex);
-
-        activeFigure.width = width;
-        activeFigure.height = height;
-        activeFigure.scale = 1;
-      }
-    }
-
     setActiveWidthIndex(newWidthIndex);
-    setAllFigures([...allFigures]);
+    
+    if (activeFigureInfo) {
+      setAllFigures(prevAllFigures => {
+        return prevAllFigures.map(figure => {
+          if (figure.id === activeFigureInfo.id) {
+            let updatedFigure = { ...figure, widthIndex: newWidthIndex };
+            
+            if (updatedFigure.type === 'text') {
+              const [width, height] = calculateCanvasTextWidth(updatedFigure.text, newWidthIndex);
+
+              updatedFigure = {
+                ...updatedFigure,
+                width: width,
+                height: height,
+                scale: 1
+              };
+            }
+            
+            return updatedFigure;
+          }
+          return figure;
+        });
+      });
+    } else {
+      // Just update the state if no active figure, using the previous state to avoid stale closure
+      setAllFigures(prevAllFigures => [...prevAllFigures]);
+    }
   };
 
   const handleChangeTool = (toolName) => {
@@ -513,18 +564,16 @@ const Application = (settings) => {
 
   const eraseFiguresOnIntersection = (eraserFigure) => {
     setAllFigures(prevFigures => {
-      let hasChanges = false;
-
       const updatedFigures = prevFigures.map(figure => {
         if (!figure.erased && areFiguresIntersecting(eraserFigure, figure)) {
-          hasChanges = true;
-
           return { ...figure, erased: true };
         }
 
         return figure;
       });
 
+      // Only return updated array if changes were made
+      const hasChanges = updatedFigures.some((fig, index) => fig.erased !== prevFigures[index].erased);
       return hasChanges ? updatedFigures : prevFigures;
     });
   }
@@ -637,77 +686,108 @@ const Application = (settings) => {
 
   const handleMouseMove = ({ x, y }) => {
     if (isActiveFigureMoving()) {
-      const activeFigure = findActiveFigure()
+      setAllFigures(prevAllFigures => {
+        const updatedFigures = [...prevAllFigures];
+        const figureIndex = updatedFigures.findIndex((figure) => figure.id === activeFigureInfo.id);
+        
+        if (figureIndex !== -1) {
+          const activeFigure = { ...updatedFigures[figureIndex] };
+          
+          if (activeFigureInfo.dragging) {
+            dragFigure(activeFigure, { x: activeFigureInfo.x, y: activeFigureInfo.y }, { x, y });
+          }
 
-      if (activeFigureInfo.dragging) {
-        dragFigure(activeFigure, { x: activeFigureInfo.x, y: activeFigureInfo.y }, { x, y })
-      }
+          if (activeFigureInfo.resizing) {
+            resizeFigure(activeFigure, activeFigureInfo.resizingDotName, { x, y, isShiftPressed });
+          }
 
-      if (activeFigureInfo.resizing) {
-        resizeFigure(activeFigure, activeFigureInfo.resizingDotName, { x, y, isShiftPressed })
-      }
-
+          updatedFigures[figureIndex] = activeFigure;
+        }
+        
+        return updatedFigures;
+      });
+      
       setActiveFigureInfo({ ...activeFigureInfo, x, y });
-      setAllFigures([...allFigures]);
       return
     }
 
     if (isDrawing) {
       if (activeTool === 'laser') {
-        const currentLaser = allLaserFigures[allLaserFigures.length - 1];
-
-        currentLaser.points = [...currentLaser.points, [x, y]];
-
-        setLaserFigure([...allLaserFigures]);
-        scheduleClearLaserTail(currentLaser.id)
+        setLaserFigure(prevLaserFigures => {
+          if (prevLaserFigures.length === 0) return prevLaserFigures;
+          
+          const updatedLaserFigures = [...prevLaserFigures];
+          const currentLaser = { ...updatedLaserFigures[updatedLaserFigures.length - 1] };
+          currentLaser.points = [...currentLaser.points, [x, y]];
+          updatedLaserFigures[updatedLaserFigures.length - 1] = currentLaser;
+          
+          scheduleClearLaserTail(currentLaser.id);
+          return updatedLaserFigures;
+        });
         return;
       }
 
       if (activeTool === 'eraser') {
-        const currentEraser = allEraserFigures[allEraserFigures.length - 1];
-
-        currentEraser.points = [...currentEraser.points, [x, y]];
-
-        eraseFiguresOnIntersection(currentEraser);
-        setEraserFigure([...allEraserFigures]);
-        scheduleClearEraserTail(currentEraser.id)
+        setEraserFigure(prevEraserFigures => {
+          if (prevEraserFigures.length === 0) return prevEraserFigures;
+          
+          const updatedEraserFigures = [...prevEraserFigures];
+          const currentEraser = { ...updatedEraserFigures[updatedEraserFigures.length - 1] };
+          currentEraser.points = [...currentEraser.points, [x, y]];
+          updatedEraserFigures[updatedEraserFigures.length - 1] = currentEraser;
+          
+          eraseFiguresOnIntersection(currentEraser);
+          scheduleClearEraserTail(currentEraser.id);
+          return updatedEraserFigures;
+        });
         return;
       }
 
       if (['pen', 'highlighter'].includes(activeTool)) {
-        const currentFigure = allFigures[allFigures.length - 1];
-
-        currentFigure.points = [...currentFigure.points, [x, y]];
-
-        setAllFigures([...allFigures]);
-        return
+        setAllFigures(prevAllFigures => {
+          if (prevAllFigures.length === 0) return prevAllFigures;
+          
+          const updatedFigures = [...prevAllFigures];
+          const currentFigure = { ...updatedFigures[updatedFigures.length - 1] };
+          currentFigure.points = [...currentFigure.points, [x, y]];
+          updatedFigures[updatedFigures.length - 1] = currentFigure;
+          
+          return updatedFigures;
+        });
+        return;
       }
 
       if (shapeList.includes(activeTool)) {
-        const currentFigure = allFigures[allFigures.length - 1];
+        setAllFigures(prevAllFigures => {
+          if (prevAllFigures.length === 0) return prevAllFigures;
+          
+          const updatedFigures = [...prevAllFigures];
+          let currentFigure = { ...updatedFigures[updatedFigures.length - 1] };
 
-        if (isShiftPressed) {
-          if (['line', 'arrow'].includes(currentFigure.type)) {
-            const startPoint = currentFigure.points[0];
+          if (isShiftPressed) {
+            if (['line', 'arrow'].includes(currentFigure.type)) {
+              const startPoint = currentFigure.points[0];
 
-            const result = applySoftSnap(startPoint[0], startPoint[1], x, y);
-            x = result.x;
-            y = result.y;
+              const result = applySoftSnap(startPoint[0], startPoint[1], x, y);
+              x = result.x;
+              y = result.y;
+            }
+
+            if (['rectangle', 'oval'].includes(currentFigure.type)) {
+              const startPoint = currentFigure.points[0];
+
+              const result = applyAspectRatioLock(startPoint[0], startPoint[1], x, y, currentFigure.ratio);
+              x = result.x;
+              y = result.y;
+            }
           }
 
-          if (['rectangle', 'oval'].includes(currentFigure.type)) {
-            const startPoint = currentFigure.points[0];
-
-            const result = applyAspectRatioLock(startPoint[0], startPoint[1], x, y, currentFigure.ratio);
-            x = result.x;
-            y = result.y;
-          }
-        }
-
-        currentFigure.points[1] = [x, y];
-
-        setAllFigures([...allFigures]);
-        return
+          currentFigure.points = [currentFigure.points[0], [x, y]];
+          updatedFigures[updatedFigures.length - 1] = currentFigure;
+          
+          return updatedFigures;
+        });
+        return;
       }
     }
 
@@ -790,14 +870,22 @@ const Application = (settings) => {
     }
 
     if (isActiveFigureMoving()) {
-      const activeFigure = findActiveFigure()
-
       if (activeFigureInfo.resizing) {
-        if (['rectangle', 'oval'].includes(activeFigure.type)) {
-          activeFigure.ratio = calculateAspectRatio(activeFigure);
-
-          setAllFigures([...allFigures]);
-        }
+        setAllFigures(prevAllFigures => {
+          const updatedFigures = [...prevAllFigures];
+          const figureIndex = updatedFigures.findIndex((figure) => figure.id === activeFigureInfo.id);
+          
+          if (figureIndex !== -1) {
+            const activeFigure = { ...updatedFigures[figureIndex] };
+            
+            if (['rectangle', 'oval'].includes(activeFigure.type)) {
+              activeFigure.ratio = calculateAspectRatio(activeFigure);
+              updatedFigures[figureIndex] = activeFigure;
+            }
+          }
+          
+          return updatedFigures;
+        });
       }
 
       setActiveFigureInfo({ id: activeFigureInfo.id });
@@ -820,7 +908,12 @@ const Application = (settings) => {
     setMouseCoordinates(getMouseCoordinates(event));
   }
 
-  const handleContextMenu = (_event) => {
+  const handleContextMenu = (event) => {
+    // Don't hide the app if radial color picker is visible
+    if (showRadialColorPicker) {
+      event.preventDefault();
+      return;
+    }
     invokeHideApp();
   }
 
@@ -847,6 +940,15 @@ const Application = (settings) => {
     setUndoStackFigures([]);
     setRedoStackFigures([]);
     setClipboardFigure(null);
+  };
+
+  const handleHideApp = () => {
+    console.log('Main -> Renderer: Handle Hide App');
+
+    setIsDrawing(false);
+    setActiveFigureInfo(null);
+    setTextEditorContainer(null);
+    // Don't clear figures, laser figures, eraser figures, ripple effects, undo/redo stacks, or clipboard
   };
 
   const handleToggleToolbar = () => {
@@ -910,7 +1012,7 @@ const Application = (settings) => {
 
     setTextEditorContainer(newTextEditor);
     setActiveFigureInfo(null);
-    setAllFigures(allFigures.filter(figure => figure.id !== pickedFigure.id));
+    setAllFigures(prevAllFigures => prevAllFigures.filter(figure => figure.id !== pickedFigure.id));
 
     setUndoStackFigures(prevUndoStack => [...prevUndoStack, { type: 'remove', figures: [pickedFigure] }]);
     setRedoStackFigures([]);

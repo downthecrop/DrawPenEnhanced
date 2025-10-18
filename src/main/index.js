@@ -404,7 +404,7 @@ function showDrawWindow() {
 }
 
 function hideDrawWindow() {
-  resetScreen()
+  mainWindow.webContents.send('hide_app')
 
   mainWindow.hide()
   if (process.platform == "darwin") {
